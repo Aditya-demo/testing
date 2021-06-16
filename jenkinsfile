@@ -1,0 +1,74 @@
+@Library('jenkins-shared@master') _
+genericPipeline{
+  disableConcurrentBuilds  = true
+  deployEnabled            = true
+  verboseJenkinsOutput     = false
+  uploadArtifactEnabled    = false
+  sonarQubeEnabled         = false
+  qualityGateEnabled       = false
+  asocStaticAnalyzeEnabled = false
+  qualityGateEnabled       = false
+  publishTagEnabled        = false
+  dockerBuildEnabled       = false
+
+  agentLabel = 'dev-shared-ubuntu-template'
+  env.ENVIRONMENT = 'template'
+  env.COMPONENT_FOLDER =  env.ENVIRONMENT + '/'  + env.COMPONENT_NAME
+  
+
+
+  jobProperties.add(parameters ([choice(name: 'COMPONENT_NAME', choices: ['EC2'].join('\n'), description: 'The component to deploy'),
+                                 booleanParam(name: 'RUN_TERRAFORM_APPLY', defaultValue: false, description: 'Whether or not to run terraform apply. Only applies to the master branch.')
+                                
+  ]))
+
+  checkoutAdditionalCommand = {
+    withCredentials([usernamePassword( credentialsId: 'aws.okta.appid', usernameVariable: 'OKTA_USERNAME', passwordVariable: 'OKTA_PASSWORD')]) {
+      withCredentials([file(credentialsId: "aws.okta.gimme-aws-creds.config", variable: 'FILE')]) {
+          sh 'cp -f "$FILE" ~'
+      }
+      withEnv(["AWS_DEFAULT_REGION=us-east-1", "AWS_ROLE=arn:aws:iam::539433721700:role/DevelopmentCampaign_InfraDeployer"]){
+        sh '''
+          gimme-aws-creds --roles $AWS_ROLE
+        '''
+      }  
+      withCredentials([sshUserPrivateKey(credentialsId: "ca.github.ssh.appid", keyFileVariable: 'keyfile')]) {
+        sh '''
+          mkdir -p ~/.ssh && cp "$keyfile" ~/.ssh/id_rsa        
+        '''
+      }
+      sh '''
+        tfenv use 0.12.29
+      '''
+    }
+  }
+
+  buildCommand = {
+   wrap([$class: 'AnsiColorBuildWrapper', 'colorMapName': 'XTerm']) {
+    sh '''
+      cd $COMPONENT_FOLDER
+
+      terraform init
+      terraform plan -out ./plan 
+    '''
+    
+    }  
+    currentBuild.description = "Planned " + env.ENVIRONMENT + '/' + env.COMPONENT_NAME + " on " + branchName + " branch"
+  }
+
+  deployCommand = {
+    if (!isPR && branchName == 'master' && env.RUN_TERRAFORM_APPLY == 'true'){
+      sh '''
+        cd $COMPONENT_FOLDER
+        terraform apply -parallelism=1 -input=false -auto-approve ./plan
+      '''
+      currentBuild.description = "Applied for " + env.ENVIRONMENT + '/' + env.COMPONENT_NAME + " on " + branchName + " branch"
+    }
+    else{
+      echo "PR or RUN_TERRAFORM_APPLY == false or branch != master"
+    }
+  }
+}
+
+
+
